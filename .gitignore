@@ -6,9 +6,6 @@ __pycache__/
 # C extensions
 *.so
 
-# data
-data/final_dataset.csv
-
 # Distribution / packaging
 .Python
 build/
