@@ -55,28 +55,55 @@ function runCheckWithCoords(name, lat, lng) {
   runAnalyzingWithCoords(name, lat, lng, btn);
 }
 
-function runAnalyzingWithCoords(name, lat, lng, btn) {
+async function runAnalyzingWithCoords(name, lat, lng, btn) {
   const steps = ['a1','a2','a3','a4'];
   const delays = [600, 1200, 1900, 2600];
   steps.forEach((id, i) => {
     setTimeout(() => document.getElementById(id).classList.add('done'), delays[i]);
   });
 
-  setTimeout(() => {
-    currentSig = SIGNALS[hash(name + 'sig') % SIGNALS.length];
-    
-    currentLat = lat;
-    currentLng = lng;
+  // Call your FastAPI backend with real GPS coords
+  let data;
+  try {
+    const res = await fetch('http://localhost:8000/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lon: lng })
+    });
+    data = await res.json();
 
+    if (!res.ok) {
+      alert(data.message || 'Location not supported.');
+      btn.textContent = 'Check'; btn.disabled = false;
+      goStep(1); return;
+    }
+  } catch {
+    alert('Backend unreachable. Is the server running?');
+    btn.textContent = 'Check'; btn.disabled = false;
+    goStep(1); return;
+  }
+
+  currentSig = {
+    dbm:   data.dbm,
+    type:  data.type,
+    label: data.label,
+    tier:  data.tier,
+    bars:  data.bars,
+    upi:   data.upi,
+    badge: data.badge
+  };
+
+  currentLat = data.lat;
+  currentLng = data.lon;
+
+  setTimeout(() => {
     document.getElementById('loc-name').textContent = name;
-    document.getElementById('loc-coords').textContent = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    document.getElementById('loc-coords').textContent = `${data.lat.toFixed(4)}, ${data.lon.toFixed(4)}`;
     populateSignal(currentSig);
     populateRecs(currentSig.tier);
+    saveRecent(name, { lat: data.lat, lng: data.lon }, currentSig);
 
-    saveRecent(name, { lat, lng }, currentSig);
-
-    btn.textContent = 'Check';
-    btn.disabled = false;
+    btn.textContent = 'Check'; btn.disabled = false;
     goStep(3);
   }, 3200);
 }
@@ -145,37 +172,77 @@ function runCheck() {
   runAnalyzing(raw, btn);
 }
 
-function runAnalyzing(raw, btn) {
+async function runAnalyzing(raw, btn) {
   const steps = ['a1','a2','a3','a4'];
   const delays = [600, 1200, 1900, 2600];
-
   steps.forEach((id, i) => {
-    setTimeout(() => {
-      document.getElementById(id).classList.add('done');
-    }, delays[i]);
+    setTimeout(() => document.getElementById(id).classList.add('done'), delays[i]);
   });
 
-  setTimeout(() => {
-    const h = hash(raw);
-    const coords = COORDS[h % COORDS.length];
-    currentSig = SIGNALS[hash(raw + 'sig') % SIGNALS.length];
-    
-    currentLat = coords.lat;
-    currentLng = coords.lng;
+  // Geocode the typed location name → lat/lon
+  let lat, lon;
+  try {
+    const geoRes = await fetch(
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(raw)}&format=json&limit=1`
+    );
+    const geoData = await geoRes.json();
+    if (!geoData.length) {
+      alert('Location not found. Try a more specific name.');
+      btn.textContent = 'Check'; btn.disabled = false;
+      goStep(1); return;
+    }
+    lat = parseFloat(geoData[0].lat);
+    lon = parseFloat(geoData[0].lon);
+  } catch {
+    alert('Could not geocode location.'); 
+    btn.textContent = 'Check'; btn.disabled = false;
+    goStep(1); return;
+  }
 
-    // Populate results
+  // Call your FastAPI backend
+  let data;
+  try {
+    const res = await fetch('http://localhost:8000/predict', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ lat, lon })
+    });
+    data = await res.json();
+
+    if (!res.ok) {
+      // Backend returns 400 for out-of-Karnataka locations
+      alert(data.message || 'Location not supported.');
+      btn.textContent = 'Check'; btn.disabled = false;
+      goStep(1); return;
+    }
+  } catch {
+    alert('Backend unreachable. Is the server running?');
+    btn.textContent = 'Check'; btn.disabled = false;
+    goStep(1); return;
+  }
+
+  // Map backend response → the sig object shape your UI expects
+  currentSig = {
+    dbm:   data.dbm,
+    type:  data.type,
+    label: data.label,
+    tier:  data.tier,
+    bars:  data.bars,
+    upi:   data.upi,
+    badge: data.badge
+  };
+
+  currentLat = data.lat;
+  currentLng = data.lon;
+
+  setTimeout(() => {
     document.getElementById('loc-name').textContent = raw;
-    document.getElementById('loc-coords').textContent = `${coords.lat}, ${coords.lng}`;
+    document.getElementById('loc-coords').textContent = `${data.lat.toFixed(4)}, ${data.lon.toFixed(4)}`;
     populateSignal(currentSig);
     populateRecs(currentSig.tier);
+    saveRecent(raw, { lat: data.lat, lng: data.lon }, currentSig);
 
-
-    // Save to recents
-    saveRecent(raw, coords, currentSig);
-
-    btn.textContent = 'Check';
-    btn.disabled = false;
-
+    btn.textContent = 'Check'; btn.disabled = false;
     goStep(3);
   }, 3200);
 }
