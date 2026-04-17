@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,6 +12,9 @@ import geopandas as gpd
 from shapely.geometry import Point
 from scipy.spatial import KDTree
 
+MODEL_PATH = "../models"
+DATA_PATH = "../data"
+
 app = FastAPI(title="NetPaySense API")
 
 # Enable CORS for frontend integration
@@ -21,14 +25,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-gdf = gpd.read_file(
-    "./data/India_State_Boundary.shp",
-)
+gdf = gpd.read_file(DATA_PATH + "/IndiaStatesBoundaryShapes/India_State_Boundary.shp")
 
-print(gdf.columns)
-karnataka = gdf[gdf["STATE"] == "Karnataka"]
+gdf = gdf.to_crs(epsg=4326) #  converts the format to latitude and longitude
 
-def isNotInKarnataka(lat: float, lon: float) -> bool:
+karnataka = gdf[gdf["STATE"] == "KARNATAKA"]
+# print(karnataka)
+
+def isInKarnataka(lat: float, lon: float) -> bool:
     point = Point(lon, lat)
     return karnataka.geometry.contains(point).any()
 
@@ -52,15 +56,15 @@ class OoklaNN(nn.Module):
 
 # Load Model 1
 ookla_model = OoklaNN(input_size=5)
-ookla_model.load_state_dict(torch.load('ookla_nn.pth'))
+ookla_model.load_state_dict(torch.load(MODEL_PATH + '/ookla_nn.pth'))
 ookla_model.eval()
-ookla_scaler = joblib.load('ookla_scaler.pkl')
+ookla_scaler = joblib.load(MODEL_PATH + '/ookla_scaler.pkl')
 
 # Load Model 2
-signal_model = joblib.load('signal_xgb.pkl')
+signal_model = joblib.load(MODEL_PATH + '/signal_xgb.pkl')
 
 # Load Look-up Data for Model 1 (Nearest Neighbor search)
-look_up_df = pd.read_csv("final_dataset.csv")
+look_up_df = pd.read_csv(DATA_PATH + '/final_dataset.csv')
 look_up_df['download_mbps'] = look_up_df['avg_d_kbps'] / 1000
 look_up_df['upload_mbps'] = look_up_df['avg_u_kbps'] / 1000
 look_up_df['latency_ms'] = look_up_df['avg_lat_ms']
@@ -118,12 +122,13 @@ def get_ui_data(quality_score):
 
 @app.post("/predict")
 async def predict(req: PredictionRequest):
-    if not isNotInKarnataka(req.lat, req.lon):
-        return {
+    # print(type(req.lat), type(req.lon))
+    if not isInKarnataka(req.lat, req.lon):
+        return JSONResponse(status_code=400, content={
             "status": "out_of_range",
             "message": "We are currently available just for Karnataka and will soon be expanding.",
             "recommendation": "Please enter a valid location within Karnataka."
-        }
+        })
     try:
         # 1. Use KDTree to find nearest location metrics for Model 1
         dist, idx = tree.query([req.lat, req.lon])
@@ -184,7 +189,7 @@ async def predict(req: PredictionRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 # Serve Frontend
-app.mount("/", StaticFiles(directory="Frontend/NetPaySense-main", html=True), name="static")
+app.mount("/", StaticFiles(directory="../Frontend/NetPaySense-main", html=True), name="static")
 
 if __name__ == "__main__":
     import uvicorn
