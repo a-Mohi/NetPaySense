@@ -1,0 +1,11 @@
+.venv
+__pycache__
+*.pyc
+.git
+.env
+notebooks
+scratch
+pip_check_temp
+.gitignore
+README.md
+LICENSE
