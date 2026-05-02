@@ -222,4 +222,9 @@ pip_check_temp/
 *.dbf
 *.prj
 *.pkl
+*.pth
 *.whl
+*.parquet
+*.png
+*.jpg
+*.jpeg
