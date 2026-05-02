@@ -1,3 +1,13 @@
+---
+title: NetPaySense API
+emoji: 🛰️
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+pinned: false
+app_port: 7860
+---
+
 # 🛰️ NetPaySense: AI-Powered UPI Reliability Checker (v4.3 Pro)
 
 **NetPaySense** is a real-time diagnostic platform designed to predict the success probability of UPI payments with localized intelligence. It combines **Dual-Model Machine Learning (Neural Networks + KDTree)** with **Live Bank Pulse Monitoring** and **Multilingual v4.2 Localization** to provide a premium, accessible payment safety dashboard.
