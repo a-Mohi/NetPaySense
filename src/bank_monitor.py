@@ -61,8 +61,18 @@ def fetch_bank_health():
     options.add_argument("--disable-logging")
     options.add_experimental_option("excludeSwitches", ["enable-logging"])
 
+    chrome_bin = os.environ.get("CHROME_BIN")
+    if chrome_bin:
+        options.binary_location = chrome_bin
+
     try:
-        driver = webdriver.Chrome(options=options)
+        chrome_driver = os.environ.get("CHROMEDRIVER_PATH")
+        if chrome_driver:
+            from selenium.webdriver.chrome.service import Service
+            service = Service(executable_path=chrome_driver)
+            driver = webdriver.Chrome(service=service, options=options)
+        else:
+            driver = webdriver.Chrome(options=options)
         driver.get(URL)
 
         wait = WebDriverWait(driver, 30)
