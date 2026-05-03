@@ -154,14 +154,18 @@ class SpeedtestService:
 
         try:
             st = speedtest.Speedtest(timeout=5)
-            # Find closest servers to the user's coordinates
-            servers = st.get_closest_servers(lat=lat, lon=lon)
+            # To find servers near the user from a remote cloud server:
+            # 1. Spoof the client location
+            st.lat_lon = (lat, lon)
+            
+            # 2. Get closest servers to those coordinates
+            servers = st.get_closest_servers(limit=5)
             if not servers:
                 return 0
             
-            # The 'latency' field in get_closest_servers is the RTT from 
-            # our current server (HF/AWS) to that specific India-based server.
-            transit_latency = servers[0]['latency']
+            # 3. Ping them to get the actual transit latency from HF -> User Region
+            best = st.get_best_server(servers)
+            transit_latency = best.get('latency', 0)
             
             with self.lock:
                 self.cache[key] = transit_latency
