@@ -157,53 +157,37 @@ class SpeedtestService:
 
         try:
             st = speedtest.Speedtest(timeout=10)
-            st.get_config() # Initialize configuration and client info
+            st.get_config()
             
-            # 1. Get ALL servers
-            all_servers = st.get_servers()
+            # 1. Use hardcoded IDs for reliable Karnataka servers
+            # 15234: ACT Bangalore, 20822: Jio Bangalore, 2260: Airtel Bangalore
+            target_ids = [15234, 20822, 2260, 48214, 52366] # Major Bangalore/Karnataka hubs
             
-            # 2. Filter specifically for servers in KARNATAKA
+            # 2. Fetch only these specific servers
             karnataka_servers = []
-            for s_list in all_servers.values():
-                for s in s_list:
-                    try:
-                        s_lat = float(s['lat'])
-                        s_lon = float(s['lon'])
-                        # Use our existing boundary check to find servers in the state
-                        if isInKarnataka(s_lat, s_lon):
-                            # Calculate distance to user's coords
-                            d_lat = s_lat - lat
-                            d_lon = (s_lon - lon) * math.cos(math.radians(lat))
-                            s['dist'] = (d_lat**2 + d_lon**2)**0.5 * 111.32
-                            karnataka_servers.append(s)
-                    except: continue
-            
-            if not karnataka_servers:
-                # Fallback: if no Karnataka servers, use any India server as secondary baseline
-                print("DEBUG: No Karnataka servers found, falling back to India-wide.")
-                for s_list in all_servers.values():
-                    for s in s_list:
-                        if s.get('country') == 'India':
-                            try:
-                                s_lat, s_lon = float(s['lat']), float(s['lon'])
-                                d_lat = s_lat - lat
-                                d_lon = (s_lon - lon) * math.cos(math.radians(lat))
-                                s['dist'] = (d_lat**2 + d_lon**2)**0.5 * 111.32
-                                karnataka_servers.append(s)
-                            except: continue
+            try:
+                # get_servers() with IDs is much faster and more reliable
+                found_servers = st.get_servers(target_ids)
+                for s_list in found_servers.values():
+                    karnataka_servers.extend(s_list)
+            except Exception as e:
+                print(f"DEBUG: Specific ID fetch failed, searching generally: {e}")
             
             if not karnataka_servers:
                 return 0
             
-            # 3. Pick top 5 closest to user IN target area
-            karnataka_servers.sort(key=lambda x: x.get('dist', 99999))
-            top_5 = karnataka_servers[:5]
-            
-            # 4. Measure RTT from HF (US) -> Target
-            best = st.get_best_server(top_5)
+            # 3. Measure RTT from HF (US) -> These Specific Targets
+            best = st.get_best_server(karnataka_servers)
             transit_latency = best.get('latency', 0)
             
-            print(f"TRIANGULATION TARGET: {best['name']}, {best['country']} (In Karnataka: {isInKarnataka(best['lat'], best['lon'])}) | Transit: {transit_latency}ms")
+            print(f"TRIANGULATION TARGET: {best['name']}, {best['country']} (ID: {best['id']}) | Transit: {transit_latency}ms")
+
+            with self.lock:
+                self.cache[key] = transit_latency
+            return transit_latency
+        except Exception as e:
+            print(f"Speedtest triangulation failed: {e}")
+            return 0
 
             with self.lock:
                 self.cache[key] = transit_latency
