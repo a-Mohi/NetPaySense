@@ -54,14 +54,16 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    """Start the background scraper when the API starts."""
-    clean_old_data() # Run cleanup on startup
-    
-    # Start the background tasks
-    scheduler = BackgroundScheduler(daemon=True)
-    scheduler.add_job(fetch_bank_health, 'interval', minutes=5)
-    scheduler.add_job(clean_old_data, 'interval', hours=12) # 🔥 Cleanup every 12 hours
-    scheduler.start()
+    """Start background tasks when the app starts."""
+    print("STARTING BACKGROUND SCHEDULER (Bank Scraper)...")
+    try:
+        scheduler = BackgroundScheduler()
+        scheduler.add_job(fetch_bank_health, 'interval', minutes=15)
+        scheduler.add_job(clean_old_data, 'interval', hours=24)
+        scheduler.start()
+        print("BACKGROUND SCHEDULER STARTED.")
+    except Exception as e:
+        print(f"FAILED TO START SCHEDULER: {e}")
     
     # Run the first scrape immediately in a separate thread so it doesn't block API startup
     threading.Thread(target=fetch_bank_health, daemon=True).start()
@@ -154,7 +156,9 @@ class SpeedtestService:
                 return self.cache[key]
 
         try:
-            st = speedtest.Speedtest(timeout=5)
+            st = speedtest.Speedtest(timeout=10)
+            st.get_config() # Initialize configuration and client info
+            
             # 1. Get ALL servers
             all_servers = st.get_servers()
             
