@@ -48,7 +48,6 @@ logging.basicConfig(
 # ─────────────────────────────────────────────
 def fetch_bank_health():
     """Scrapes bank health data and saves it to CSV."""
-    print(">>> [DEBUG] fetch_bank_health() triggered!")
     timestamp = datetime.now().isoformat()
     logging.info("Starting scrape...")
 
@@ -64,14 +63,10 @@ def fetch_bank_health():
 
     chrome_bin = os.environ.get("CHROME_BIN")
     if chrome_bin:
-        print(f">>> [DEBUG] Setting binary_location to {chrome_bin}")
         options.binary_location = chrome_bin
 
     try:
         chrome_driver = os.environ.get("CHROMEDRIVER_PATH")
-        print(f">>> [DEBUG] CHROMEDRIVER_PATH is {chrome_driver}")
-        
-        print(">>> [DEBUG] Calling webdriver.Chrome()...")
         if chrome_driver:
             from selenium.webdriver.chrome.service import Service
             service = Service(executable_path=chrome_driver)
@@ -79,11 +74,9 @@ def fetch_bank_health():
         else:
             driver = webdriver.Chrome(options=options)
             
-        print(">>> [DEBUG] webdriver.Chrome() succeeded! Calling driver.get(URL)...")
         driver.set_page_load_timeout(30) # Prevent indefinite hanging
         driver.get(URL)
         
-        print(">>> [DEBUG] Page loaded! Waiting for table...")
         wait = WebDriverWait(driver, 30)
         wait.until(lambda d: d.find_element(By.CSS_SELECTOR, "table"))
 
@@ -145,16 +138,13 @@ def fetch_bank_health():
             
             # Insert in batches if needed, or all at once since it's small (~50-100 banks)
             supabase.table("bank_health").insert(records).execute()
-            print(f">>> [DEBUG] Saved {len(data)} banks to Supabase successfully!")
             logging.info(f"Saved {len(data)} banks to Supabase")
         else:
-            print(">>> [DEBUG] ERROR: Supabase client not initialized, skipping save.")
             logging.error("Supabase client not initialized, skipping save.")
         return True
     except Exception as e:
         import traceback
-        err_msg = f">>> [DEBUG] CRITICAL SCRAPER ERROR: {e}\n{traceback.format_exc()}"
-        print(err_msg)
+        err_msg = f"CRITICAL SCRAPER ERROR: {e}\n{traceback.format_exc()}"
         logging.error(err_msg)
         
         # Take a screenshot to debug what the browser actually sees (e.g., Cloudflare block)
@@ -162,9 +152,8 @@ def fetch_bank_health():
             try:
                 screenshot_path = DATA_PATH / "error_screenshot.png"
                 driver.save_screenshot(str(screenshot_path))
-                print(f">>> [DEBUG] Screenshot saved to {screenshot_path}")
-            except Exception as ss_err:
-                print(f">>> [DEBUG] Failed to save screenshot: {ss_err}")
+            except Exception:
+                pass
                 
         return False
     finally:

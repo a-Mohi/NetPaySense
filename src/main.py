@@ -589,7 +589,7 @@ def get_all_feedback() -> pd.DataFrame:
         threshold = (datetime.now() - timedelta(hours=24)).isoformat()
         response = (
             supabase.table("feedback")
-            .select("lat, lon, outcome, metrics, timestamp")
+            .select("lat, lon, outcome, timestamp")
             .gte("timestamp", threshold)
             .execute()
         )
@@ -643,11 +643,23 @@ async def submit_feedback(req: FeedbackRequest):
     if supabase is None:
         raise HTTPException(status_code=503, detail="Feedback storage not configured. Set SUPABASE_URL and SUPABASE_KEY in .env")
     try:
+        metrics = req.metrics or {}
+        
+        def parse_float(val):
+            if val is None: return None
+            if not isinstance(val, str): return float(val)
+            import re
+            match = re.search(r"[\d.]+", val)
+            return float(match.group()) if match else None
+
         record = {
             "lat":      req.lat,
             "lon":      req.lon,
             "outcome":  req.outcome,
-            "metrics":  req.metrics,   # stored as JSONB
+            "latency":  parse_float(metrics.get("latency")),
+            "download": parse_float(metrics.get("download")),
+            "upload":   parse_float(metrics.get("upload")),
+            "operator": metrics.get("operator", "Unknown"),
             "timestamp": datetime.now().isoformat(),
         }
         supabase.table("feedback").insert(record).execute()
