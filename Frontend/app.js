@@ -1255,21 +1255,21 @@ async function performClientSpeedTest() {
     } catch (e) { console.warn("Operator check failed", e); }
 
     // 2. Measure TRUE Local Latency (Edge Ping)
-    // Cloudflare has nodes in Bangalore/Mumbai. This measures your actual internet quality.
+    // Using speed.cloudflare.com ensures the TLS connection is warm for the subsequent speed tests!
     try {
       // Warm-up to establish TCP/SSL connection
-      await fetch('https://1.1.1.1/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' });
+      await fetch('https://speed.cloudflare.com/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' });
       
       const edgePings = [];
       for (let i = 0; i < 3; i++) {
         const start = performance.now();
-        await fetch('https://1.1.1.1/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' });
+        await fetch('https://speed.cloudflare.com/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' });
         edgePings.push(performance.now() - start);
       }
       metrics.local_latency = Math.round(Math.min(...edgePings));
     } catch (e) { console.warn("Edge ping failed", e); }
 
-    // 3. Measure Backend Latency (For system health)
+    // 3. Measure Backend Latency (For system health diagnostics)
     await fetch('/test-download', { method: 'HEAD' });
     const pings = [];
     for (let i = 0; i < 3; i++) {
@@ -1279,22 +1279,23 @@ async function performClientSpeedTest() {
     }
     metrics.latency = Math.min(...pings);
 
-    // 4. Measure Download Speed (4MB)
+    // 4. Measure Download Speed (10MB from Cloudflare Global Edge)
+    // Since we just pinged speed.cloudflare.com, the TLS connection is fully warm.
     const startDown = performance.now();
-    const downRes = await fetch('/test-download', { cache: 'no-store' });
+    const downRes = await fetch('https://speed.cloudflare.com/__down?bytes=10000000', { cache: 'no-store' });
     const blob = await downRes.blob();
     const durationDown = (performance.now() - startDown) / 1000;
     const sizeDownBits = blob.size * 8;
-    const adjDown = Math.max(0.01, durationDown - (metrics.latency / 1000));
+    const adjDown = Math.max(0.01, durationDown - (metrics.local_latency / 1000));
     metrics.download = parseFloat(((sizeDownBits / adjDown) / 1000000).toFixed(2));
 
-    // 5. Measure Upload Speed (1MB)
+    // 5. Measure Upload Speed (1MB to Cloudflare Global Edge)
     const uploadData = new Uint8Array(1024 * 1024);
     const startUp = performance.now();
-    await fetch('/test-upload', { method: 'POST', body: uploadData, cache: 'no-store' });
+    await fetch('https://speed.cloudflare.com/__up', { method: 'POST', body: uploadData, cache: 'no-store' });
     const durationUp = (performance.now() - startUp) / 1000;
     const sizeUpBits = uploadData.length * 8;
-    const adjUp = Math.max(0.01, durationUp - (metrics.latency / 1000));
+    const adjUp = Math.max(0.01, durationUp - (metrics.local_latency / 1000));
     metrics.upload = parseFloat(((sizeUpBits / adjUp) / 1000000).toFixed(2));
 
     return metrics;
