@@ -156,23 +156,29 @@ class SpeedtestService:
                 return self.cache[key]
 
         try:
-            # We measure latency from HF (Cloud) to AWS Mumbai (India)
-            # This is a rock-solid proxy for US-to-India transit time.
-            import httpx
+            # High-Precision TCP Handshake to AWS Mumbai (ap-south-1)
+            import socket
             import time
             
-            start = time.perf_counter()
-            with httpx.Client(timeout=2.0) as client:
-                # AWS Mumbai regional endpoint
-                try:
-                    client.get("https://ec2.ap-south-1.amazonaws.com")
-                    transit_latency = (time.perf_counter() - start) * 1000
-                except:
-                    # Fallback to Google India
-                    client.get("https://www.google.co.in")
-                    transit_latency = (time.perf_counter() - start) * 1000
+            # AWS Mumbai (ap-south-1) Public IP range sample
+            target_ip = "15.206.0.1" 
+            
+            # Warm-up (ensures DNS/Routing is ready)
+            try:
+                s = socket.create_connection((target_ip, 80), timeout=1.0)
+                s.close()
+            except: pass
 
-            print(f"TRIANGULATION: Cloud -> India Transit: {transit_latency:.1f}ms")
+            # Real Measurement
+            start = time.perf_counter()
+            try:
+                s = socket.create_connection((target_ip, 80), timeout=1.0)
+                s.close()
+                transit_latency = (time.perf_counter() - start) * 1000
+            except:
+                transit_latency = 0
+
+            print(f"TRIANGULATION: Cloud -> India Transit (TCP): {transit_latency:.1f}ms")
 
             with self.lock:
                 self.cache[key] = transit_latency
