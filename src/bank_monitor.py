@@ -48,7 +48,7 @@ logging.basicConfig(
 # ─────────────────────────────────────────────
 def fetch_bank_health():
     """Scrapes bank health data and saves it to CSV."""
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.now().isoformat()
     logging.info("Starting scrape...")
 
     options = Options()
