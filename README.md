@@ -97,7 +97,7 @@ The **UPI Success Chance** is determined by a deterministic physics and probabil
 ---
 
 ## 📄 License
-This project is licensed under the [MIT License](LICENSE).
+This project is proprietary. All rights reserved. See the [LICENSE](LICENSE) file for details.
 
 ---
 
