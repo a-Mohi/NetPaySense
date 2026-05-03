@@ -162,13 +162,17 @@ class SpeedtestService:
             karnataka_servers = []
             for s_list in all_servers.values():
                 for s in s_list:
-                    # Use our existing boundary check to find servers in the state
-                    if isInKarnataka(s['lat'], s['lon']):
-                        # Calculate distance to user's coords
-                        d_lat = s['lat'] - lat
-                        d_lon = (s['lon'] - lon) * math.cos(math.radians(lat))
-                        s['dist'] = (d_lat**2 + d_lon**2)**0.5 * 111.32
-                        karnataka_servers.append(s)
+                    try:
+                        s_lat = float(s['lat'])
+                        s_lon = float(s['lon'])
+                        # Use our existing boundary check to find servers in the state
+                        if isInKarnataka(s_lat, s_lon):
+                            # Calculate distance to user's coords
+                            d_lat = s_lat - lat
+                            d_lon = (s_lon - lon) * math.cos(math.radians(lat))
+                            s['dist'] = (d_lat**2 + d_lon**2)**0.5 * 111.32
+                            karnataka_servers.append(s)
+                    except: continue
             
             if not karnataka_servers:
                 # Fallback: if no Karnataka servers, use any India server as secondary baseline
@@ -176,13 +180,19 @@ class SpeedtestService:
                 for s_list in all_servers.values():
                     for s in s_list:
                         if s.get('country') == 'India':
-                            karnataka_servers.append(s)
+                            try:
+                                s_lat, s_lon = float(s['lat']), float(s['lon'])
+                                d_lat = s_lat - lat
+                                d_lon = (s_lon - lon) * math.cos(math.radians(lat))
+                                s['dist'] = (d_lat**2 + d_lon**2)**0.5 * 111.32
+                                karnataka_servers.append(s)
+                            except: continue
             
             if not karnataka_servers:
                 return 0
             
             # 3. Pick top 5 closest to user IN target area
-            karnataka_servers.sort(key=lambda x: x.get('dist', 9999))
+            karnataka_servers.sort(key=lambda x: x.get('dist', 99999))
             top_5 = karnataka_servers[:5]
             
             # 4. Measure RTT from HF (US) -> Target
