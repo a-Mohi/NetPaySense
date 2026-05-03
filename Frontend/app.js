@@ -1257,9 +1257,16 @@ async function performClientSpeedTest() {
     // 2. Measure TRUE Local Latency (Edge Ping)
     // Cloudflare has nodes in Bangalore/Mumbai. This measures your actual internet quality.
     try {
-      const edgeStart = performance.now();
+      // Warm-up to establish TCP/SSL connection
       await fetch('https://1.1.1.1/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' });
-      metrics.local_latency = Math.round(performance.now() - edgeStart);
+      
+      const edgePings = [];
+      for (let i = 0; i < 3; i++) {
+        const start = performance.now();
+        await fetch('https://1.1.1.1/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' });
+        edgePings.push(performance.now() - start);
+      }
+      metrics.local_latency = Math.round(Math.min(...edgePings));
     } catch (e) { console.warn("Edge ping failed", e); }
 
     // 3. Measure Backend Latency (For system health)
