@@ -1242,57 +1242,53 @@ async function performClientSpeedTest() {
     download: 0,
     upload: 0,
     latency: 0,
+    local_latency: 0,
     operator: 'Unknown'
   };
 
   try {
-    // 1. Get Operator via IP-API (Optional, fallback to Tower)
+    // 1. Get Operator via IP-API
     try {
       const ipRes = await fetch('https://ipapi.co/json/');
       const ipData = await ipRes.json();
       metrics.operator = ipData.org || ipData.isp || 'Unknown';
     } catch (e) { console.warn("Operator check failed", e); }
 
-    // 2. Measure Latency (Pro: use performance.now and warm-up)
-    // Warm-up to establish TCP/SSL
-    await fetch('/test-download', { method: 'HEAD' });
+    // 2. Measure TRUE Local Latency (Edge Ping)
+    // Cloudflare has nodes in Bangalore/Mumbai. This measures your actual internet quality.
+    try {
+      const edgeStart = performance.now();
+      await fetch('https://1.1.1.1/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' });
+      metrics.local_latency = Math.round(performance.now() - edgeStart);
+    } catch (e) { console.warn("Edge ping failed", e); }
 
+    // 3. Measure Backend Latency (For system health)
+    await fetch('/test-download', { method: 'HEAD' });
     const pings = [];
     for (let i = 0; i < 3; i++) {
       const start = performance.now();
       await fetch('/test-download', { method: 'HEAD', cache: 'no-store' });
       pings.push(performance.now() - start);
     }
-    metrics.latency = Math.min(...pings); // Use minimum for jitter-free RTT
+    metrics.latency = Math.min(...pings);
 
-    // 3. Measure Download Speed (Increased Payload: 4MB)
+    // 4. Measure Download Speed (4MB)
     const startDown = performance.now();
     const downRes = await fetch('/test-download', { cache: 'no-store' });
     const blob = await downRes.blob();
-    const endDown = performance.now();
-    
-    const durationDown = (endDown - startDown) / 1000; // seconds
+    const durationDown = (performance.now() - startDown) / 1000;
     const sizeDownBits = blob.size * 8;
-    
-    // Latency-Adjusted Mbps: Account for RTT overhead
-    // For small/mid payloads, we subtract one RTT for request-response start
-    const adjustedDurationDown = Math.max(0.01, durationDown - (metrics.latency / 1000));
-    metrics.download = parseFloat(((sizeDownBits / adjustedDurationDown) / 1000000).toFixed(2));
+    const adjDown = Math.max(0.01, durationDown - (metrics.latency / 1000));
+    metrics.download = parseFloat(((sizeDownBits / adjDown) / 1000000).toFixed(2));
 
-    // 4. Measure Upload Speed (Increased Payload: 1MB)
-    const uploadData = new Uint8Array(1024 * 1024); // 1MB
+    // 5. Measure Upload Speed (1MB)
+    const uploadData = new Uint8Array(1024 * 1024);
     const startUp = performance.now();
-    await fetch('/test-upload', {
-      method: 'POST',
-      body: uploadData,
-      cache: 'no-store'
-    });
-    const endUp = performance.now();
-    
-    const durationUp = (endUp - startUp) / 1000;
+    await fetch('/test-upload', { method: 'POST', body: uploadData, cache: 'no-store' });
+    const durationUp = (performance.now() - startUp) / 1000;
     const sizeUpBits = uploadData.length * 8;
-    const adjustedDurationUp = Math.max(0.01, durationUp - (metrics.latency / 1000));
-    metrics.upload = parseFloat(((sizeUpBits / adjustedDurationUp) / 1000000).toFixed(2));
+    const adjUp = Math.max(0.01, durationUp - (metrics.latency / 1000));
+    metrics.upload = parseFloat(((sizeUpBits / adjUp) / 1000000).toFixed(2));
 
     return metrics;
   } catch (err) {

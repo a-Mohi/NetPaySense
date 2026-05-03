@@ -294,21 +294,25 @@ async def predict(req: PredictionRequest):
         live_operator = None
         is_triangulated = False
         if req.live_metrics:
-            # --- LATENCY TRIANGULATION (FIX FOR REMOTE SERVERS) ---
+            # --- LATENCY SELECTION (FIX FOR REMOTE SERVERS) ---
+            # Prioritize TRUE local edge latency if sent by the client
+            local_lat = req.live_metrics.get('local_latency', 0)
             raw_lat = req.live_metrics.get('latency', lat)
             
-            # Step 1: Calculate "Cloud Transit Time" (HF -> User's Region)
-            transit_time = await asyncio.to_thread(speed_service.get_transit_latency, req.lat, req.lon)
-            
-            # Step 2: Correct the user's latency
-            if transit_time > 0 and raw_lat > transit_time:
-                # Actual Local Latency = Total RTT - Cloud Transit Time
-                # We add a small 5ms buffer for local processing
-                lat = max(5.0, raw_lat - transit_time)
+            if local_lat > 0:
+                lat = local_lat
                 is_triangulated = True
-                print(f"TRIANGULATED: Raw {raw_lat}ms -> Local {lat:.1f}ms (Transit: {transit_time:.1f}ms)")
+                print(f"EDGE PING: Local {lat}ms | Backend {raw_lat}ms")
             else:
-                lat = raw_lat
+                # Step 1: Calculate "Cloud Transit Time" (HF -> User's Region)
+                transit_time = await asyncio.to_thread(speed_service.get_transit_latency, req.lat, req.lon)
+                
+                # Step 2: Correct the user's latency
+                if transit_time > 0 and raw_lat > transit_time:
+                    lat = max(5.0, raw_lat - transit_time)
+                    is_triangulated = True
+                else:
+                    lat = raw_lat
 
             dn = req.live_metrics.get('download', dn)
             up = req.live_metrics.get('upload', up)
