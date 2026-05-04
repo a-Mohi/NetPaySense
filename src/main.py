@@ -20,7 +20,7 @@ import threading
 import asyncio
 import speedtest
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict
 import pandas as pd
 import numpy as np
@@ -129,6 +129,7 @@ class PredictionRequest(BaseModel):
     dbm: Optional[float] = None
     bank_name: Optional[str] = None # User-selected bank
     live_metrics: Optional[Dict] = None # From speedtest-cli pulse check
+    is_live: bool = False # Flag for live GPS sessions
 
 class BankPredictionRequest(BaseModel):
     bank: str
@@ -141,6 +142,7 @@ class FeedbackRequest(BaseModel):
     lon: float
     outcome: str # success, failed, pending
     metrics: dict
+    is_live: bool = False
 
 # ----------- SPEEDTEST SERVICE (TRIANGULATION) -----------
 class SpeedtestService:
@@ -218,7 +220,7 @@ def get_ui_data(quality_score, upi_score, community_alert=False, is_triangulated
         tier = "good"
         badge = "Low Risk"
         label = "High Performance"
-        from datetime import datetime
+        from datetime import datetime, timedelta, timezone
         now_str = datetime.now().strftime("%H:%M:%S")
         
         # Add a star if we successfully used triangulation for a better score
@@ -294,6 +296,9 @@ async def predict(req: PredictionRequest):
         is_verified = False
         live_operator = None
         is_triangulated = False
+        jitter_val = 0
+        loss_val = 0
+        
         if req.live_metrics:
             # --- LATENCY SELECTION (FIX FOR REMOTE SERVERS) ---
             # Prioritize TRUE local edge latency if sent by the client
@@ -317,6 +322,8 @@ async def predict(req: PredictionRequest):
 
             dn = req.live_metrics.get('download', dn)
             up = req.live_metrics.get('upload', up)
+            jitter_val = req.live_metrics.get('jitter', 0)
+            loss_val = req.live_metrics.get('packet_loss', 0)
             live_operator = req.live_metrics.get('operator')
             is_verified = True
 
@@ -369,10 +376,26 @@ async def predict(req: PredictionRequest):
         else:
             dn_penalty = 12
 
-        # Small jitter for realism (real networks fluctuate ±2%)
-        jitter = (np.random.random() - 0.5) * 4.0
+        # STABILITY PENALTY (Jitter) — Critical for new 8s NPCI timeout
+        if jitter_val > 50:
+            jitter_penalty = 45   # Extreme jitter makes handshake fail
+        elif jitter_val > 25:
+            jitter_penalty = 15   # Risky
+        else:
+            jitter_penalty = 0
+            
+        # PACKET LOSS PENALTY — Fatal for UPI's small TCP packets
+        if loss_val > 2.0:
+            loss_penalty = 60     # Near-certain technical decline
+        elif loss_val > 0.5:
+            loss_penalty = 12
+        else:
+            loss_penalty = 0
 
-        upi_score = BASE_RATE - lat_penalty - up_penalty - dn_penalty + jitter
+        # Small jitter for realism (real networks fluctuate ±2%)
+        random_jitter = (np.random.random() - 0.5) * 4.0
+
+        upi_score = BASE_RATE - lat_penalty - up_penalty - dn_penalty - jitter_penalty - loss_penalty + random_jitter
         upi_score = max(5.0, min(99.8, upi_score))
 
         # Derive tier FROM the UPI score (prevents gauge/score contradictions)
@@ -443,6 +466,8 @@ async def predict(req: PredictionRequest):
                 "download": f"{dn:.2f} Mbps", 
                 "upload": f"{up:.2f} Mbps",
                 "latency": f"{lat:.1f} ms",
+                "jitter": f"{jitter_val:.1f} ms",
+                "packet_loss": f"{loss_val:.1f}%",
                 "is_verified": is_verified,
                 "operator": live_operator or best_operator,  # 🟢 Badge shows current SIM (fallback to tower)
                 "tower_count": nearest_tower_data.get("total_towers_found", 0),
@@ -660,8 +685,12 @@ async def submit_feedback(req: FeedbackRequest):
             "latency":  parse_float(metrics.get("latency")),
             "download": parse_float(metrics.get("download")),
             "upload":   parse_float(metrics.get("upload")),
+            "jitter":   parse_float(metrics.get("jitter")),
+            "packet_loss": parse_float(metrics.get("packet_loss")),
             "operator": metrics.get("operator", "Unknown"),
-            "timestamp": datetime.now().isoformat(),
+            "is_triangulated": metrics.get("is_triangulated", False),
+            "is_live":  req.is_live,
+            "timestamp": datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime('%Y-%m-%d %H:%M:%S'),
         }
         supabase.table("feedback").insert(record).execute()
         return {"status": "recorded"}

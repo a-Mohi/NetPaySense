@@ -918,8 +918,12 @@ async function translateIfNeeded(text, targetLang) {
 
 // ── Real-time Bank Status ──
 async function refreshBankStatus() {
+  // ── Offline-First: Strict 10-second timeout on the backend call ──
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
   try {
-    const res = await fetch('/bank-status');
+    const res = await fetch('/bank-status', { signal: controller.signal });
+    clearTimeout(timeoutId);
     const data = await res.json();
 
     // Update the live bank grid in the Banks tab
@@ -1236,12 +1240,14 @@ function hash(str) {
   return h;
 }
 
-// ── CLIENT-SIDE SPEED TEST (PRO) ──
+// ── CLIENT-SIDE SPEED TEST (NPCI PULSE) ──
 async function performClientSpeedTest() {
   const metrics = {
     download: 0,
     upload: 0,
     latency: 0,
+    jitter: 0,
+    packet_loss: 0,
     local_latency: 0,
     operator: 'Unknown'
   };
@@ -1254,49 +1260,89 @@ async function performClientSpeedTest() {
       metrics.operator = ipData.org || ipData.isp || 'Unknown';
     } catch (e) { console.warn("Operator check failed", e); }
 
-    // 2. Measure TRUE Local Latency (Edge Ping)
-    // Using speed.cloudflare.com ensures the TLS connection is warm for the subsequent speed tests!
+    // 2. HTTP PING TRAIN (NPCI-Aligned 10-Pulse Diagnostic)
+    // Measures Jitter and Packet Loss (Critical for UPI stability)
     try {
-      // Warm-up to establish TCP/SSL connection
-      await fetch('https://speed.cloudflare.com/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' });
-      
-      const edgePings = [];
-      for (let i = 0; i < 3; i++) {
+      const pings = [];
+      let fails = 0;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000); // NPCI VPA Limit
+
+      for (let i = 0; i < 10; i++) {
         const start = performance.now();
-        await fetch('https://speed.cloudflare.com/cdn-cgi/trace', { mode: 'no-cors', cache: 'no-store' });
-        edgePings.push(performance.now() - start);
+        try {
+          await fetch('https://speed.cloudflare.com/cdn-cgi/trace', { 
+            mode: 'no-cors', 
+            cache: 'no-store',
+            signal: controller.signal 
+          });
+          pings.push(performance.now() - start);
+        } catch (e) {
+          fails++;
+        }
       }
-      metrics.local_latency = Math.round(Math.min(...edgePings));
-    } catch (e) { console.warn("Edge ping failed", e); }
+      clearTimeout(timeoutId);
 
-    // 3. Measure Backend Latency (For system health diagnostics)
-    await fetch('/test-download', { method: 'HEAD' });
-    const pings = [];
-    for (let i = 0; i < 3; i++) {
-      const start = performance.now();
-      await fetch('/test-download', { method: 'HEAD', cache: 'no-store' });
-      pings.push(performance.now() - start);
-    }
-    metrics.latency = Math.min(...pings);
+      if (pings.length > 0) {
+        metrics.local_latency = Math.round(Math.min(...pings));
+        metrics.latency = Math.round(pings.reduce((a, b) => a + b) / pings.length);
+        
+        // Calculate Jitter (Standard Deviation)
+        const avg = metrics.latency;
+        const squareDiffs = pings.map(p => Math.pow(p - avg, 2));
+        metrics.jitter = Math.round(Math.sqrt(squareDiffs.reduce((a, b) => a + b) / pings.length));
+        metrics.packet_loss = Math.round((fails / 10) * 100);
+      }
+    } catch (e) { console.warn("Ping train failed", e); }
 
-    // 4. Measure Download Speed (10MB from Cloudflare Global Edge)
-    // Since we just pinged speed.cloudflare.com, the TLS connection is fully warm.
+    // 3. NPCI 8-SECOND STREAM DOWNLOAD TEST
+    // Capped at exactly 8 seconds to mirror UPI VPA validation timeout
+    const downController = new AbortController();
+    const downTimeout = setTimeout(() => downController.abort(), 8000);
+    
     const startDown = performance.now();
-    const downRes = await fetch('https://speed.cloudflare.com/__down?bytes=10000000', { cache: 'no-store' });
-    const blob = await downRes.blob();
-    const durationDown = (performance.now() - startDown) / 1000;
-    const sizeDownBits = blob.size * 8;
-    const adjDown = Math.max(0.01, durationDown - (metrics.local_latency / 1000));
-    metrics.download = parseFloat(((sizeDownBits / adjDown) / 1000000).toFixed(2));
+    let bytesReceived = 0;
 
-    // 5. Measure Upload Speed (1MB to Cloudflare Global Edge)
+    try {
+      // Fetch a large file but we will abort it
+      const response = await fetch('https://speed.cloudflare.com/__down?bytes=50000000', { 
+        signal: downController.signal,
+        cache: 'no-store' 
+      });
+      
+      const reader = response.body.getReader();
+      while(true) {
+        const {done, value} = await reader.read();
+        if (done) break;
+        bytesReceived += value.length;
+        
+        // Dynamic early exit: If we have enough data to be confident (>2MB) after 4s
+        if (performance.now() - startDown > 4000 && bytesReceived > 2000000) {
+          downController.abort();
+          break;
+        }
+      }
+    } catch (e) {
+      if (e.name !== 'AbortError') console.warn("Download stream error", e);
+    } finally {
+      clearTimeout(downTimeout);
+    }
+
+    const durationDown = (performance.now() - startDown) / 1000;
+    metrics.download = parseFloat(((bytesReceived * 8) / (durationDown * 1000000)).toFixed(2));
+
+    // 4. Measure Upload Speed (Lightweight 1MB Pulse)
     const uploadData = new Uint8Array(1024 * 1024);
     const startUp = performance.now();
-    await fetch('https://speed.cloudflare.com/__up', { method: 'POST', body: uploadData, cache: 'no-store' });
-    const durationUp = (performance.now() - startUp) / 1000;
-    const sizeUpBits = uploadData.length * 8;
-    const adjUp = Math.max(0.01, durationUp - (metrics.local_latency / 1000));
-    metrics.upload = parseFloat(((sizeUpBits / adjUp) / 1000000).toFixed(2));
+    try {
+      await fetch('https://speed.cloudflare.com/__up', { 
+        method: 'POST', 
+        body: uploadData, 
+        cache: 'no-store' 
+      });
+      const durationUp = (performance.now() - startUp) / 1000;
+      metrics.upload = parseFloat(((uploadData.length * 8) / (durationUp * 1000000)).toFixed(2));
+    } catch (e) { console.warn("Upload pulse failed", e); }
 
     return metrics;
   } catch (err) {
@@ -1321,7 +1367,7 @@ function getMyLocation() {
   document.getElementById('dash-bank-dropdown')?.classList.add('hidden');
 
   const btn = document.getElementById('geo-btn');
-  btn.textContent = '⏳ Fetching...';
+  btn.textContent = '🛰️ Finding Satellites...';
   btn.disabled = true;
   // Show skeletons
   document.getElementById('skeleton-loc').classList.remove('hidden');
@@ -1358,7 +1404,7 @@ function getMyLocation() {
 
       // 🛰️ Run Pro Client-Side Speed Test
       let liveMetrics = null;
-      btn.textContent = T('analyzing_title');
+      btn.textContent = '📶 Probing NPCI Pulse...';
       try {
         liveMetrics = await performClientSpeedTest();
         console.log("Real Metrics on Device:", liveMetrics);
@@ -1370,8 +1416,8 @@ function getMyLocation() {
 
       useLiveLocation(lat, lng, name, liveMetrics);
     },
-    () => useLiveLocation(12.9716, 77.5946, 'Bengaluru', { download: 0, upload: 0, latency: 999, local_latency: 999, operator: 'Unknown (Offline)' }),
-    { timeout: 8000, maximumAge: 10000, enableHighAccuracy: false }
+    () => useLiveLocation(12.9716, 77.5946, 'Bengaluru', { download: 0, upload: 0, latency: 999, jitter: 0, packet_loss: 0, local_latency: 999, operator: 'Unknown (Offline)' }),
+    { timeout: 120000, maximumAge: 10000, enableHighAccuracy: true }
   );
 }
 
@@ -1530,9 +1576,9 @@ async function runAnalyzingWithCoords(name, lat, lng, btn, liveMetrics = null) {
     // Bug 1 fix: include selected bank so overrides fire on GPS checks
     const selectedBank = document.getElementById('bank-select')?.value || null;
 
-    // ── Offline-First: Strict 10-second timeout on the backend call ──
+    // ── Offline-First: Strict 15-second timeout on the backend call ──
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // NPCI Request Pay Limit
 
     let res;
     try {
@@ -1543,7 +1589,8 @@ async function runAnalyzingWithCoords(name, lat, lng, btn, liveMetrics = null) {
           lat,
           lon: lng,
           live_metrics: liveMetrics,
-          bank_name: selectedBank || undefined
+          bank_name: selectedBank || undefined,
+          is_live: isLiveSession
         }),
         signal: controller.signal
       });
@@ -1671,7 +1718,15 @@ function renderOfflineFallback(name, lat, lng, metrics, btn) {
     label: tier === 'good' ? 'Good' : tier === 'mid' ? 'Moderate' : 'Poor',
     dbm: '-70',
     type: 'offline',
-    metrics: { download: `${dn} Mbps`, upload: `${up} Mbps`, latency: `${ms} ms`, is_verified: false, operator: 'Unknown (Offline)' },
+    metrics: { 
+      download: `${dn} Mbps`, 
+      upload: `${up} Mbps`, 
+      latency: `${ms} ms`, 
+      jitter: `${metrics.jitter || 0} ms`,
+      packet_loss: `${metrics.packet_loss || 0}%`,
+      is_verified: metrics.is_verified || false, 
+      operator: metrics.operator || 'Unknown (Offline)' 
+    },
     best_network: 'Offline Mode',
     recommendation: rec,
     community_alert: false,
@@ -1679,7 +1734,18 @@ function renderOfflineFallback(name, lat, lng, metrics, btn) {
     offline: true
   };
 
-  currentSig = { tier, label: offlineData.label, upi: upiText, badge, dbm: '-70', type: 'offline', metrics: offlineData.metrics, best_network: 'Offline Mode', serverVersion: 'Offline' };
+  currentSig = { 
+    tier, 
+    label: offlineData.label, 
+    upi: upiText, 
+    badge, 
+    dbm: '-70', 
+    type: 'offline', 
+    metrics: offlineData.metrics, 
+    best_network: 'Offline Mode', 
+    serverVersion: 'Offline',
+    is_triangulated: metrics.is_triangulated || false
+  };
   lastNetworkScore = upiScore;
 
   setTimeout(() => {
@@ -1736,11 +1802,11 @@ function populateSignal(sig) {
   const opName = document.getElementById('results-operator-name');
   if (vBox && sig.metrics && sig.metrics.operator && sig.metrics.operator !== 'Unknown') {
     vBox.classList.remove('hidden');
-    
+
     // Dynamically set the text based on whether it's verified (live test) or just detected (nearby)
     const opName = document.getElementById('results-operator-name');
     const opStatus = document.getElementById('results-verification-status');
-    
+
     if (opName) opName.textContent = sig.metrics.operator;
     if (opStatus) opStatus.textContent = sig.metrics.is_verified ? 'Verified' : 'Nearest Tower';
   } else if (vBox) {
@@ -1758,7 +1824,7 @@ function populateRecs(tier, operator, towerCount, isOffline = false) {
   const list = document.getElementById('rec-list');
   list.innerHTML = '';
   const langRecs = REC_TRANSLATIONS[currentLang] || REC_TRANSLATIONS.en;
-  
+
   console.log(`DEBUG: Found ${towerCount || 0} nearest towers. Chosen: ${operator}`);
 
   // 1. Override for Offline Mode
@@ -2055,7 +2121,8 @@ async function submitFeedbackNew() {
     lat: rawLat || 0,
     lon: rawLng || 0,
     outcome: fbOutcome,
-    metrics: currentSig?.metrics || {}
+    metrics: currentSig?.metrics || {},
+    is_live: isLiveSession
   };
 
   if (!navigator.onLine) {
