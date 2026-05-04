@@ -1525,16 +1525,34 @@ async function runAnalyzingWithCoords(name, lat, lng, btn, liveMetrics = null) {
     // Bug 1 fix: include selected bank so overrides fire on GPS checks
     const selectedBank = document.getElementById('bank-select')?.value || null;
 
-    const res = await fetch('/predict', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        lat,
-        lon: lng,
-        live_metrics: liveMetrics,
-        bank_name: selectedBank || undefined
-      })
-    });
+    // ── Offline-First: Strict 10-second timeout on the backend call ──
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+    let res;
+    try {
+      res = await fetch('/predict', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lat,
+          lon: lng,
+          live_metrics: liveMetrics,
+          bank_name: selectedBank || undefined
+        }),
+        signal: controller.signal
+      });
+    } catch (fetchErr) {
+      clearTimeout(timeoutId);
+      // Network failed or timed out — try offline fallback
+      if (liveMetrics && (fetchErr.name === 'AbortError' || fetchErr.name === 'TypeError')) {
+        console.warn('Backend unreachable. Using offline heuristic fallback.');
+        renderOfflineFallback(name, lat, lng, liveMetrics, btn);
+        return;
+      }
+      throw fetchErr; // re-throw for non-network errors
+    }
+    clearTimeout(timeoutId);
 
     // Bug 4 fix: handle 403 (outside Karnataka) with a clear message
     if (res.status === 403) {
@@ -1608,6 +1626,72 @@ function animateSteps() {
   ['a1', 'a2', 'a3', 'a4'].forEach((id, i) =>
     setTimeout(() => document.getElementById(id).classList.add('done'), delays[i])
   );
+}
+
+// ── Offline Heuristic Fallback ──────────────────────────────────────────────
+// Called when the Hugging Face backend is unreachable (dead zone / timeout).
+// Uses the Cloudflare live metrics already measured on-device to classify risk.
+function renderOfflineFallback(name, lat, lng, metrics, btn) {
+  const dn = parseFloat(metrics.download) || 0;
+  const up = parseFloat(metrics.upload) || 0;
+  const ms = parseFloat(metrics.latency || metrics.local_latency) || 999;
+
+  let tier, badge, upiText, rec, upiScore;
+
+  if (dn < 1.0 || up < 0.3 || ms > 300) {
+    tier = 'poor';
+    badge = '⚠️ HIGH RISK (Offline Mode)';
+    upiText = 'Low - ~10%';
+    upiScore = 10;
+    rec = '🚫 Network is critically weak. Avoid UPI payments. Use cash or wait for better signal.';
+  } else if (dn < 5.0 || up < 1.5 || ms > 150) {
+    tier = 'mid';
+    badge = '🟡 MEDIUM RISK (Offline Mode)';
+    upiText = 'Medium - ~55%';
+    upiScore = 55;
+    rec = '⚠️ Signal is unstable. Proceed with caution and keep your bank app open.';
+  } else {
+    tier = 'good';
+    badge = '✅ LOW RISK (Offline Mode)';
+    upiText = 'High - ~85%';
+    upiScore = 85;
+    rec = '✅ Signal looks decent. Payment likely to succeed, but server could not be reached to confirm.';
+  }
+
+  const offlineData = {
+    tier, badge,
+    upi: upiText,
+    label: tier === 'good' ? 'Good' : tier === 'mid' ? 'Moderate' : 'Poor',
+    dbm: '-70',
+    type: 'offline',
+    metrics: { download: `${dn} Mbps`, upload: `${up} Mbps`, latency: `${ms} ms`, is_verified: false, operator: 'Unknown (Offline)' },
+    best_network: 'Offline Mode',
+    recommendation: rec,
+    community_alert: false,
+    server_version: 'Offline',
+    offline: true
+  };
+
+  currentSig = { tier, label: offlineData.label, upi: upiText, badge, dbm: '-70', type: 'offline', metrics: offlineData.metrics, best_network: 'Offline Mode', serverVersion: 'Offline' };
+  lastNetworkScore = upiScore;
+
+  setTimeout(() => {
+    try {
+      document.getElementById('loc-name').textContent = `${name} (Offline)`;
+      document.getElementById('loc-coords').textContent = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+      populateSignal(currentSig);
+      showResultsBankStatus();
+      document.getElementById('community-alert-banner')?.classList.add('hidden');
+      document.getElementById('debug-server-version').textContent = '⚡ Offline Fallback Mode';
+      saveRecent(name, { lat, lng }, currentSig);
+      btn.textContent = T('check_btn'); btn.disabled = false;
+      goStep(3);
+    } catch (e) {
+      console.error('Offline render error:', e);
+      btn.textContent = 'Check'; btn.disabled = false;
+      goStep(1);
+    }
+  }, 800);
 }
 
 function populateSignal(sig) {

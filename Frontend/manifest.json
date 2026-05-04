@@ -1,0 +1,21 @@
+{
+  "name": "NetPaySense",
+  "short_name": "NetPaySense",
+  "description": "Network and UPI Reliability Checker",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f8f9fa",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "https://api.dicebear.com/7.x/bottts/svg?seed=netpay",
+      "sizes": "192x192",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "https://api.dicebear.com/7.x/bottts/svg?seed=netpay",
+      "sizes": "512x512",
+      "type": "image/svg+xml"
+    }
+  ]
+}
