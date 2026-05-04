@@ -1684,7 +1684,9 @@ function renderOfflineFallback(name, lat, lng, metrics, btn) {
 
   setTimeout(() => {
     try {
-      document.getElementById('loc-name').textContent = `${name} (Offline)`;
+      // If name is just the coordinates string, replace it with a cleaner title
+      const isRedundant = name.includes(lat.toFixed(4).toString());
+      document.getElementById('loc-name').textContent = isRedundant ? 'Offline Location' : `${name} (Offline)`;
       document.getElementById('loc-coords').textContent = `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
       populateSignal(currentSig);
       showResultsBankStatus();
@@ -1749,15 +1751,25 @@ function populateSignal(sig) {
   setTimeout(() => drawGauge('results-risk-gauge', numericScore, 'results-risk-label'), 100);
 
   // Pass operator to recommendations
-  populateRecs(sig.tier, sig.best_network, sig.metrics.tower_count);
+  populateRecs(sig.tier, sig.best_network, sig.metrics?.tower_count, sig.type === 'offline' || sig.offline);
 }
 
-function populateRecs(tier, operator, towerCount) {
+function populateRecs(tier, operator, towerCount, isOffline = false) {
   const list = document.getElementById('rec-list');
   list.innerHTML = '';
   const langRecs = REC_TRANSLATIONS[currentLang] || REC_TRANSLATIONS.en;
   
   console.log(`DEBUG: Found ${towerCount || 0} nearest towers. Chosen: ${operator}`);
+
+  // 1. Override for Offline Mode
+  if (isOffline || operator === 'Offline Mode') {
+    list.innerHTML = `
+      <li><div class="rec-icon-box">📡</div><span>Move to an open area or closer to a window for better satellite/network lock.</span></li>
+      <li><div class="rec-icon-box">📶</div><span>Find a nearby Wi-Fi network to complete the payment.</span></li>
+      <li><div class="rec-icon-box">💵</div><span>Carry cash as a backup — digital payments are highly likely to fail here.</span></li>
+    `;
+    return;
+  }
 
   langRecs[tier].forEach(r => {
     let text = r.text;
@@ -1773,6 +1785,33 @@ function populateRecs(tier, operator, towerCount) {
     list.appendChild(li);
   });
 }
+
+// ── Background Sync for Offline Feedback ──
+async function flushOfflineFeedback() {
+  if (!navigator.onLine) return;
+  const queue = JSON.parse(localStorage.getItem('offline_feedback_queue') || '[]');
+  if (queue.length === 0) return;
+
+  console.log(`Attempting to sync ${queue.length} offline feedback items...`);
+  const pending = [];
+  for (const item of queue) {
+    try {
+      await fetch('/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(item)
+      });
+    } catch (e) {
+      console.error("Failed to sync an offline item, keeping in queue", e);
+      pending.push(item);
+    }
+  }
+  localStorage.setItem('offline_feedback_queue', JSON.stringify(pending));
+  if (pending.length === 0) console.log("Offline feedback sync complete!");
+}
+
+window.addEventListener('online', flushOfflineFeedback);
+window.addEventListener('load', flushOfflineFeedback);
 
 // ── End of Main Functions ──
 
@@ -2019,14 +2058,26 @@ async function submitFeedbackNew() {
     metrics: currentSig?.metrics || {}
   };
 
-  try {
-    await fetch('/feedback', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(feedbackData)
-    });
-    console.log("Feedback recorded for community alerts.");
-  } catch (e) { console.error("Feedback submission error", e); }
+  if (!navigator.onLine) {
+    console.log("Offline: Queueing feedback for later sync");
+    const queue = JSON.parse(localStorage.getItem('offline_feedback_queue') || '[]');
+    queue.push(feedbackData);
+    localStorage.setItem('offline_feedback_queue', JSON.stringify(queue));
+  } else {
+    try {
+      await fetch('/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(feedbackData)
+      });
+      console.log("Feedback recorded for community alerts.");
+    } catch (e) {
+      console.warn("Feedback submission error (network issue), queueing for later:", e);
+      const queue = JSON.parse(localStorage.getItem('offline_feedback_queue') || '[]');
+      queue.push(feedbackData);
+      localStorage.setItem('offline_feedback_queue', JSON.stringify(queue));
+    }
+  }
 
   const tips = {
     success: '🎉 Great! Glad it went through. Keep checking signal before big payments.',
