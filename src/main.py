@@ -339,63 +339,44 @@ async def predict(req: PredictionRequest):
             # but UPI score is now calculated from first principles below.
             _ = torch.argmax(m1_out, dim=1).item()
 
-        # --- Physics-Based UPI Success Rate ---
-        # A UPI transaction is ~50KB of data. What causes failures:
-        #   1. HIGH LATENCY  → round-trip exceeds UPI's timeout window (~30s)
-        #   2. LOW UPLOAD    → payment request never fully reaches the bank server
-        #   3. LOW DOWNLOAD  → minor, only affects receiving the small confirmation
-        BASE_RATE = 95.0
+        # --- PHYSICS-BASED UPI SUCCESS RATE (SMOOTH CURVES) ---
+        # A UPI transaction is ~50KB. Failure causes:
+        #   1. HIGH LATENCY  → RTT exceeds NPCI's 8s window
+        #   2. LOW UPLOAD    → Payment request stalls at bank
+        #   3. JITTER        → RTO variance causes retransmission bursts
+        #   4. PACKET LOSS   → Fatal for short TCP flows (cost ∝ RTT)
+        BASE_RATE = 96.0
 
-        # LATENCY PENALTY — most critical factor
-        if lat < 50:
-            lat_penalty = 0       # Excellent: sub-50ms feels instant
-        elif lat < 100:
-            lat_penalty = 15      # Acceptable: slight delay but usually succeeds
-        elif lat < 150:
-            lat_penalty = 35      # Risky: approaching timeout range for slow banks
-        elif lat < 200:
-            lat_penalty = 55      # High failure risk
-        else:
-            lat_penalty = 75      # Near-certain timeout
+        # 0. EFFECTIVE LATENCY (Spike Awareness)
+        # Real failures come from worst-case latency spikes, not averages.
+        # We use a weighted blend: 70% average + 30% p95 to capture intermittent stalls.
+        p95_lat = float(req.live_metrics.get("p95_latency", lat)) if req.live_metrics else lat
+        effective_lat = 0.7 * lat + 0.3 * p95_lat
 
-        # UPLOAD PENALTY — second most critical
-        if up >= 2.0:
-            up_penalty = 0        # Sufficient: UPI needs ~50KB, 2Mbps handles it easily
-        elif up >= 1.0:
-            up_penalty = 8        # Marginal but usually fine
-        elif up >= 0.5:
-            up_penalty = 25       # Risky: large payloads may stall
-        else:
-            up_penalty = 60       # Critical: payment request unlikely to complete
+        # 1. LATENCY PENALTY (Exponential Curve on effective_lat)
+        # Curve saturates at ~40 penalty points, reflecting short-flow timeout risk.
+        lat_penalty = 0 if effective_lat <= 60 else 40 * (1 - np.exp(-(effective_lat - 60) / 120))
 
-        # DOWNLOAD PENALTY — minor, only receiving small confirmation ACK
-        if dn >= 2.0:
-            dn_penalty = 0
-        elif dn >= 0.5:
-            dn_penalty = 5
-        else:
-            dn_penalty = 12
+        # 2. UPLOAD/DOWNLOAD PENALTIES (Logarithmic Floor)
+        # UPI cares about minimum viable throughput, not ceiling speeds.
+        up_penalty = max(0, 15 * (1 - np.log10(max(0.1, up))))
+        dn_penalty = max(0, 8 * (1 - np.log10(max(0.1, dn))))
 
-        # STABILITY PENALTY (Jitter) — Critical for new 8s NPCI timeout
-        if jitter_val > 50:
-            jitter_penalty = 45   # Extreme jitter makes handshake fail
-        elif jitter_val > 25:
-            jitter_penalty = 15   # Risky
-        else:
-            jitter_penalty = 0
-            
-        # PACKET LOSS PENALTY — Fatal for UPI's small TCP packets
-        if loss_val > 2.0:
-            loss_penalty = 60     # Near-certain technical decline
-        elif loss_val > 0.5:
-            loss_penalty = 12
-        else:
-            loss_penalty = 0
+        # 3. STABILITY PENALTY (Jitter — Reduced Weight)
+        # Jitter is an indirect proxy for RTO variance, not a direct cause.
+        jitter_penalty = 35 * (1 - np.exp(-jitter_val / 40))
 
-        # Small jitter for realism (real networks fluctuate ±2%)
-        random_jitter = (np.random.random() - 0.5) * 4.0
+        # 4. PACKET LOSS PENALTY (Reduced Coefficient + Capped Multiplier)
+        # Multiplier is capped at 1.75x to prevent extreme penalties in moderate conditions.
+        # (e.g., 2% loss @ 150ms was previously > 100pt penalty — now corrected)
+        loss_base = 55 * (1 - np.exp(-loss_val * 1.2))
+        loss_penalty = loss_base * min(1.75, (1 + (effective_lat / 200)))
 
-        upi_score = BASE_RATE - lat_penalty - up_penalty - dn_penalty - jitter_penalty - loss_penalty + random_jitter
+        # 5. JITTER-PROPORTIONAL NOISE (Realism with Boundary Guard)
+        # Noise is clamped to ±3 so it can never flip a tier category on its own.
+        noise = np.clip(np.random.normal(0, max(0.5, jitter_val * 0.05)), -3, 3)
+
+        upi_score = BASE_RATE - lat_penalty - up_penalty - dn_penalty - jitter_penalty - loss_penalty + noise
         upi_score = max(5.0, min(99.8, upi_score))
 
         # Derive tier FROM the UPI score (prevents gauge/score contradictions)

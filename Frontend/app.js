@@ -1292,6 +1292,13 @@ async function performClientSpeedTest() {
         const squareDiffs = pings.map(p => Math.pow(p - avg, 2));
         metrics.jitter = Math.round(Math.sqrt(squareDiffs.reduce((a, b) => a + b) / pings.length));
         metrics.packet_loss = Math.round((fails / 10) * 100);
+
+        // p95 Latency (Spike Awareness)
+        // Captures worst-case latency that average would miss entirely.
+        // Backend uses: effective_lat = 0.7 * avg + 0.3 * p95
+        const sorted = [...pings].sort((a, b) => a - b);
+        const p95 = sorted[Math.floor(sorted.length * 0.95)] || sorted[sorted.length - 1];
+        metrics.p95_latency = Math.round(p95);
       }
     } catch (e) { console.warn("Ping train failed", e); }
 
