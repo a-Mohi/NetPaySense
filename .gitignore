@@ -228,3 +228,5 @@ pip_check_temp/
 *.png
 *.jpg
 *.jpeg
+# Exception: PWA icons must be tracked
+!Frontend/icon-*.png
