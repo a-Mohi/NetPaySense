@@ -335,9 +335,7 @@ async def predict(req: PredictionRequest):
 
         with torch.no_grad():
             m1_out = ookla_model(torch.tensor(m1_scaled, dtype=torch.float32))
-            # Neural net still used for its trained feature understanding,
-            # but UPI score is now calculated from first principles below.
-            _ = torch.argmax(m1_out, dim=1).item()
+            model_tier = torch.argmax(m1_out, dim=1).item() # 0 (Poor), 1 (Mid), 2 (Good)
 
         # --- PHYSICS-BASED UPI SUCCESS RATE (SMOOTH CURVES) ---
         # A UPI transaction is ~50KB. Failure causes:
@@ -377,9 +375,23 @@ async def predict(req: PredictionRequest):
         noise = np.clip(np.random.normal(0, max(0.5, jitter_val * 0.05)), -3, 3)
 
         upi_score = BASE_RATE - lat_penalty - up_penalty - dn_penalty - jitter_penalty - loss_penalty + noise
+        # --- ML MODEL BLENDING ---
+        # The ML model (trained on historical data) acts as a reality check on the physics.
+        phys_tier = 2 if upi_score >= 75 else 1 if upi_score >= 40 else 0
+        tier_diff = model_tier - phys_tier
+
+        if tier_diff < 0:
+            # Model is MORE PESSIMISTIC (e.g., Physics=Good, Model=Poor)
+            # High penalty (-15 pts per tier drop) because the model recognizes a historical dead-zone.
+            upi_score += (tier_diff * 15)
+        elif tier_diff > 0:
+            # Model is MORE OPTIMISTIC (e.g., Physics=Poor, Model=Good)
+            # Small boost (+5 pts per tier jump) giving benefit of the doubt to trained history.
+            upi_score += (tier_diff * 5)
+
         upi_score = max(5.0, min(99.8, upi_score))
 
-        # Derive tier FROM the UPI score (prevents gauge/score contradictions)
+        # Derive final UI tier FROM the blended score (prevents gauge/text contradictions)
         if upi_score >= 75:
             m1_quality = 2  # Good
         elif upi_score >= 40:
