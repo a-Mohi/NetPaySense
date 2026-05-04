@@ -55,18 +55,19 @@ app.add_middleware(
 @app.on_event("startup")
 async def startup_event():
     """Start background tasks when the app starts."""
-    print("STARTING BACKGROUND SCHEDULER (Bank Scraper)...")
+    print("STARTING BACKGROUND SCHEDULER (Cleanup Task Only)...")
     try:
         scheduler = BackgroundScheduler()
-        scheduler.add_job(fetch_bank_health, 'interval', minutes=15)
+        # DECOUPLED: fetch_bank_health is now run via GitHub Actions to bypass Cloudflare
+        # scheduler.add_job(fetch_bank_health, 'interval', minutes=15)
         scheduler.add_job(clean_old_data, 'interval', hours=24)
         scheduler.start()
         print("BACKGROUND SCHEDULER STARTED.")
     except Exception as e:
         print(f"FAILED TO START SCHEDULER: {e}")
     
-    # Run the first scrape immediately in a separate thread so it doesn't block API startup
-    threading.Thread(target=fetch_bank_health, daemon=True).start()
+    # DECOUPLED: First scrape is handled by GitHub Actions
+    # threading.Thread(target=fetch_bank_health, daemon=True).start()
 
 gdf = gpd.read_file(DATA_PATH / "IndiaStatesBoundaryShapes/India_State_Boundary.shp")
 gdf = gdf.to_crs(epsg=4326) # converts to lat/lon
