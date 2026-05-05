@@ -360,9 +360,17 @@ async def predict(req: PredictionRequest):
         up_penalty = max(0, 15 * (1 - np.log10(max(0.1, up))))
         dn_penalty = max(0, 8 * (1 - np.log10(max(0.1, dn))))
 
-        # 3. STABILITY PENALTY (Jitter — Reduced Weight)
-        # Jitter is an indirect proxy for RTO variance, not a direct cause.
-        jitter_penalty = 35 * (1 - np.exp(-jitter_val / 40))
+        # 3. STABILITY PENALTY (Jitter scaled by Packet Loss)
+        # Jitter without packet loss mostly causes harmless delay.
+        # Jitter WITH packet loss causes fatal TCP RTO timeouts.
+        if loss_val < 0.1:
+            jitter_effect = 0.4   # reduced but not ignored
+        elif loss_val < 1.0:
+            jitter_effect = 0.7
+        else:
+            jitter_effect = 1.0   # full effect
+
+        jitter_penalty = jitter_effect * (35 * (1 - np.exp(-jitter_val / 40)))
 
         # 4. PACKET LOSS PENALTY (Reduced Coefficient + Capped Multiplier)
         # Multiplier is capped at 1.75x to prevent extreme penalties in moderate conditions.
